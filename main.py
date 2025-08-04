@@ -16,7 +16,17 @@ from models import (
     get_user_history, 
     get_total_user_kruzhoks,
     set_user_language,
-    get_user_language
+    get_user_language,
+    get_or_create_user_subscription,
+    can_create_kruzhok,
+    use_kruzhok,
+    get_user_limits,
+    add_referral,
+    get_referral_stats,
+    create_payment_request,
+    get_pending_payments,
+    approve_payment,
+    reject_payment
 )
 
 # Environment variables are handled by Replit automatically
@@ -34,6 +44,9 @@ if not BOT_TOKEN:
 # Admin ID
 ADMIN_ID = 5615887242
 
+# Payment card number
+PAYMENT_CARD = "9860290101626056"
+
 # Logging sozlash
 logging.basicConfig(
     level=logging.INFO,
@@ -49,6 +62,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 # User state management
 user_states = {}
 user_media_files = {}
+user_payment_plans = {}  # Store selected payment plan
 
 # Effect names mapping
 EFFECT_NAMES = {
@@ -83,7 +97,36 @@ Tezkor buyruqlar:
         'history_empty': "📭 Hali kruzhok yaratmagansiz. Video yoki rasm yuboring!",
         'history_count': "📊 Jami yaratilgan kruzhoklar: {count} ta",
         'lang_selection': "🌐 Quyidagi tillardan birini tanlang:",
-        'language_set': "✅ Til o'zbekchaga o'rnatildi!"
+        'language_set': "✅ Til o'zbekchaga o'rnatildi!",
+        'daily_limit_reached': "❌ Kunlik limit tugadi! Premium sotib oling yoki do'stlaringizni taklif qiling.",
+        'referral_success': "🎉 Referral muvaffaqiyatli! 3 ta bonus kruzhok oldingiz!",
+        'referral_info': """🎁 Referral dasturi:
+
+👥 Siz taklif qilgan: {count} ta
+🎬 Bonus kruzhoklar: {bonus} ta
+
+Do'stlaringizni taklif qiling va har 1 kishi uchun 3 ta kruzhok oling!
+
+Sizning referral havolangiz:
+{link}""",
+        'premium_info': """💎 Premium Rejalar:
+
+🔹 1 Hafta - 5000 so'm
+• Cheksiz kruzhoklar
+• Barcha effektlar
+
+🔹 1 Oy - 15000 so'm  
+• Cheksiz kruzhoklar
+• Barcha effektlar
+• Yuqori sifat
+
+📳 To'lov: {card}
+
+Chek rasmini yuboring!""",
+        'limits_info': "📊 Sizning limitlaringiz:\n\n📱 Bugun ishlatilgan: {used}/{limit}\n🎁 Bonus kruzhoklar: {bonus}\n👥 Taklif qilganlar: {referrals}\n💎 Status: {status}",
+        'payment_received': "✅ To'lov cheki qabul qilindi! Admin tekshirgandan so'ng premium faollashadi.",
+        'payment_approved': "🎉 To'lovingiz tasdiqlandi! Premium faollashdi.",
+        'payment_rejected': "❌ To'lovingiz rad etildi. Sabab: {reason}"
     },
     'ru': {
         'welcome': """👋 Привет, {}!
@@ -301,12 +344,35 @@ def process_photo_to_kruzhok(input_path, output_path, effect_type=1):
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    """Handle /start command - show language selection for new users"""
+    """Handle /start command - show language selection for new users or process referral"""
     user_id = message.from_user.id
     
     # Log admin access
     if is_admin(user_id):
         logger.info(f"Admin {user_id} started the bot")
+    
+    # Check for referral link
+    if len(message.text.split()) > 1:
+        referral_code = message.text.split()[1]
+        if referral_code.startswith('ref_'):
+            try:
+                referrer_id = int(referral_code.replace('ref_', ''))
+                if referrer_id != user_id:  # Can't refer yourself
+                    # Add referral
+                    if add_referral(
+                        referrer_id=referrer_id,
+                        referred_id=user_id,
+                        referrer_username=message.from_user.username,
+                        referrer_first_name=message.from_user.first_name
+                    ):
+                        # Notify referrer about bonus
+                        try:
+                            messages_referrer = get_user_messages(referrer_id)
+                            bot.send_message(referrer_id, messages_referrer['referral_success'])
+                        except:
+                            pass
+            except:
+                pass
     
     # Always show language selection first for /start command
     markup = create_language_keyboard()
@@ -402,6 +468,103 @@ def handle_stats_command(message):
         logger.error(f"Error in stats command: {e}")
         bot.reply_to(message, "❌ Xatolik yuz berdi")
 
+@bot.message_handler(commands=['referral'])
+def handle_referral_command(message):
+    """Handle /referral command - show referral info and link"""
+    user_id = message.from_user.id
+    messages = get_user_messages(user_id)
+    
+    try:
+        stats = get_referral_stats(user_id)
+        bot_username = bot.get_me().username
+        referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+        
+        referral_text = messages['referral_info'].format(
+            count=stats['total_referrals'],
+            bonus=stats['total_bonus_kruzhoks'],
+            link=referral_link
+        )
+        
+        bot.reply_to(message, referral_text)
+        
+    except Exception as e:
+        logger.error(f"Error in referral command: {e}")
+        bot.reply_to(message, messages['error'])
+
+@bot.message_handler(commands=['premium'])
+def handle_premium_command(message):
+    """Handle /premium command - show premium plans"""
+    user_id = message.from_user.id
+    messages = get_user_messages(user_id)
+    
+    # Create inline keyboard for premium plans
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    
+    btn_weekly = types.InlineKeyboardButton("📅 1 Hafta - 5000 so'm", callback_data="premium_weekly")
+    btn_monthly = types.InlineKeyboardButton("📆 1 Oy - 15000 so'm", callback_data="premium_monthly")
+    
+    markup.add(btn_weekly, btn_monthly)
+    
+    premium_text = messages['premium_info'].format(card=PAYMENT_CARD)
+    bot.reply_to(message, premium_text, reply_markup=markup)
+
+@bot.message_handler(commands=['limits'])
+def handle_limits_command(message):
+    """Handle /limits command - show user limits"""
+    user_id = message.from_user.id
+    messages = get_user_messages(user_id)
+    
+    try:
+        limits = get_user_limits(user_id)
+        status = "💎 Premium" if limits['is_premium'] else "🆓 Bepul"
+        
+        limits_text = messages['limits_info'].format(
+            used=limits['daily_used'],
+            limit=limits['daily_limit'],
+            bonus=limits['bonus_kruzhoks'],
+            referrals=limits['referral_count'],
+            status=status
+        )
+        
+        bot.reply_to(message, limits_text)
+        
+    except Exception as e:
+        logger.error(f"Error in limits command: {e}")
+        bot.reply_to(message, messages['error'])
+
+@bot.message_handler(commands=['payments'])
+def handle_payments_command(message):
+    """Handle /payments command - admin only, show pending payments"""
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    try:
+        pending_payments = get_pending_payments()
+        
+        if not pending_payments:
+            bot.reply_to(message, "📭 Kutilayotgan to'lovlar yo'q")
+            return
+        
+        for payment in pending_payments:
+            payment_text = f"""💳 To'lov so'rovi #{payment.id}
+
+👤 Foydalanuvchi: {payment.first_name} (@{payment.username or 'username_yoq'})
+💰 Summa: {payment.payment_amount:,} so'm
+📅 Reja: {payment.payment_plan}
+🕒 Vaqt: {payment.created_at.strftime('%d.%m.%Y %H:%M')}
+
+Chekni ko'rish uchun /receipt_{payment.id} yuboring
+Tasdiqlash: /approve_{payment.id}
+Rad etish: /reject_{payment.id}"""
+            
+            bot.send_message(message.chat.id, payment_text)
+            
+    except Exception as e:
+        logger.error(f"Error in payments command: {e}")
+        bot.reply_to(message, "❌ Xatolik yuz berdi")
+
 @bot.message_handler(commands=['history'])
 def send_history(message):
     """Handle /history command - show user's recent kruzhok videos"""
@@ -428,9 +591,11 @@ def send_history(message):
                 # Send the kruzhok video_note
                 bot.send_video_note(
                     message.chat.id,
-                    item.file_id,
-                    caption=caption if len(caption) <= 1024 else ""  # Telegram caption limit
+                    item.file_id
                 )
+                # Send caption as separate message if needed
+                if caption:
+                    bot.send_message(message.chat.id, caption)
             except Exception as e:
                 logger.error(f"Error sending history item {item.id}: {e}")
                 continue
@@ -440,46 +605,63 @@ def send_history(message):
         messages = get_user_messages(message.from_user.id)
         bot.reply_to(message, messages['error'])
 
-@bot.message_handler(content_types=['video'])
-def handle_video(message):
-    """Handle video messages"""
-    try:
-        user_id = message.from_user.id
-        
-        # Get file info
-        file_info = bot.get_file(message.video.file_id)
-        
-        # Create temporary file
-        input_file = create_temp_file(suffix='.mp4')
-        
-        # Download the video
-        downloaded_file = bot.download_file(file_info.file_path)
-        with open(input_file, 'wb') as f:
-            f.write(downloaded_file)
-        
-        # Store user media file and set state
-        user_media_files[user_id] = {
-            'file_path': input_file,
-            'media_type': 'video',
-            'duration': message.video.duration or 10
-        }
-        user_states[user_id] = 'choosing_effect'
-        
-        # Send effect selection menu with inline keyboard
-        messages = get_user_messages(user_id)
-        markup = create_effect_keyboard()
-        bot.reply_to(message, messages['choose_effect'], reply_markup=markup)
-            
-    except Exception as e:
-        logger.error(f"Error handling video: {e}")
-        messages = get_user_messages(message.from_user.id)
-        bot.reply_to(message, messages['error'])
-
 @bot.message_handler(content_types=['photo'])
-def handle_photo(message):
-    """Handle photo messages"""
+def handle_photo_and_receipts(message):
+    """Handle photo messages - including payment receipts"""
     try:
         user_id = message.from_user.id
+        
+        # Check if user is uploading a payment receipt
+        if user_id in user_payment_plans:
+            plan = user_payment_plans[user_id]
+            amount = 5000 if plan == 'weekly' else 15000
+            
+            # Get the largest photo size
+            photo = message.photo[-1]
+            
+            # Create payment request
+            payment = create_payment_request(
+                user_id=user_id,
+                username=message.from_user.username,
+                first_name=message.from_user.first_name,
+                amount=amount,
+                plan=plan,
+                receipt_file_id=photo.file_id
+            )
+            
+            if payment:
+                messages = get_user_messages(user_id)
+                bot.reply_to(message, messages['payment_received'])
+                
+                # Notify admin
+                admin_text = f"""💳 Yangi to'lov so'rovi!
+
+👤 {message.from_user.first_name} (@{message.from_user.username or 'username_yoq'})
+💰 {amount:,} so'm - {plan}
+🆔 #{payment.id}
+
+/payments - Barcha so'rovlarni ko'rish"""
+                
+                try:
+                    bot.send_message(ADMIN_ID, admin_text)
+                    bot.send_photo(ADMIN_ID, photo.file_id, caption=f"To'lov cheki #{payment.id}")
+                except:
+                    pass
+                
+                # Clear payment state
+                del user_payment_plans[user_id]
+            else:
+                messages = get_user_messages(user_id)
+                bot.reply_to(message, messages['error'])
+            
+            return
+        
+        # Regular photo processing for kruzhok
+        # Check if user can create kruzhok
+        if not can_create_kruzhok(user_id):
+            messages = get_user_messages(user_id)
+            bot.reply_to(message, messages['daily_limit_reached'])
+            return
         
         # Get the largest photo size
         photo = message.photo[-1]
@@ -511,6 +693,146 @@ def handle_photo(message):
         messages = get_user_messages(message.from_user.id)
         bot.reply_to(message, messages['error'])
 
+@bot.message_handler(content_types=['video'])
+def handle_video(message):
+    """Handle video messages"""
+    try:
+        user_id = message.from_user.id
+        
+        # Check if user can create kruzhok
+        if not can_create_kruzhok(user_id):
+            messages = get_user_messages(user_id)
+            bot.reply_to(message, messages['daily_limit_reached'])
+            return
+        
+        # Get file info
+        file_info = bot.get_file(message.video.file_id)
+        
+        # Create temporary file
+        input_file = create_temp_file(suffix='.mp4')
+        
+        # Download the video
+        downloaded_file = bot.download_file(file_info.file_path)
+        with open(input_file, 'wb') as f:
+            f.write(downloaded_file)
+        
+        # Store user media file and set state
+        user_media_files[user_id] = {
+            'file_path': input_file,
+            'media_type': 'video',
+            'duration': message.video.duration or 10
+        }
+        user_states[user_id] = 'choosing_effect'
+        
+        # Send effect selection menu with inline keyboard
+        messages = get_user_messages(user_id)
+        markup = create_effect_keyboard()
+        bot.reply_to(message, messages['choose_effect'], reply_markup=markup)
+            
+    except Exception as e:
+        logger.error(f"Error handling video: {e}")
+        messages = get_user_messages(message.from_user.id)
+        bot.reply_to(message, messages['error'])
+
+
+
+@bot.message_handler(func=lambda message: message.text and message.text.startswith('/receipt_'))
+def handle_receipt_command(message):
+    """Handle /receipt_ID command - show payment receipt"""
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    try:
+        payment_id = int(message.text.split('_')[1])
+        from models import SessionLocal, PaymentRequest
+        
+        session = SessionLocal()
+        payment = session.query(PaymentRequest).filter(
+            PaymentRequest.id == payment_id
+        ).first()
+        
+        if payment:
+            bot.send_photo(
+                message.chat.id, 
+                payment.receipt_file_id,
+                caption=f"To'lov cheki #{payment.id}\n👤 {payment.first_name}\n💰 {payment.payment_amount:,} so'm"
+            )
+        else:
+            bot.reply_to(message, "❌ To'lov topilmadi")
+        
+        session.close()
+        
+    except Exception as e:
+        logger.error(f"Error showing receipt: {e}")
+        bot.reply_to(message, "❌ Xatolik yuz berdi")
+
+@bot.message_handler(func=lambda message: message.text and message.text.startswith('/approve_'))
+def handle_approve_command(message):
+    """Handle /approve_ID command - approve payment"""
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    try:
+        payment_id = int(message.text.split('_')[1])
+        payment = approve_payment(payment_id, "Tasdiqlandi")
+        
+        if payment:
+            # Notify user about approval
+            try:
+                messages = get_user_messages(payment.user_id)
+                bot.send_message(payment.user_id, messages['payment_approved'])
+            except:
+                pass
+            
+            bot.reply_to(message, f"✅ To'lov #{payment_id} tasdiqlandi!")
+        else:
+            bot.reply_to(message, "❌ To'lov topilmadi yoki xatolik")
+        
+    except Exception as e:
+        logger.error(f"Error approving payment: {e}")
+        bot.reply_to(message, "❌ Xatolik yuz berdi")
+
+@bot.message_handler(func=lambda message: message.text and message.text.startswith('/reject_'))
+def handle_reject_command(message):
+    """Handle /reject_ID command - reject payment"""
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    try:
+        payment_id = int(message.text.split('_')[1])
+        
+        # Ask for rejection reason
+        msg = bot.reply_to(message, "❌ Rad etish sababini yozing:")
+        bot.register_next_step_handler(msg, process_rejection_reason, payment_id)
+        
+    except Exception as e:
+        logger.error(f"Error rejecting payment: {e}")
+        bot.reply_to(message, "❌ Xatolik yuz berdi")
+
+def process_rejection_reason(message, payment_id):
+    """Process rejection reason"""
+    reason = message.text
+    payment = reject_payment(payment_id, reason)
+    
+    if payment:
+        # Notify user about rejection
+        try:
+            messages = get_user_messages(payment.user_id)
+            rejection_msg = messages['payment_rejected'].format(reason=reason)
+            bot.send_message(payment.user_id, rejection_msg)
+        except:
+            pass
+        
+        bot.reply_to(message, f"❌ To'lov #{payment_id} rad etildi!")
+    else:
+        bot.reply_to(message, "❌ To'lov topilmadi yoki xatolik")
+
 @bot.message_handler(content_types=['document', 'audio', 'voice', 'sticker'])
 def handle_unsupported(message):
     """Handle unsupported file types"""
@@ -532,6 +854,41 @@ def handle_effect_callback(call):
         
     except Exception as e:
         logger.error(f"Error handling effect callback: {e}")
+        bot.answer_callback_query(call.id, text="❌ Xatolik yuz berdi")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('premium_'))
+def handle_premium_callback(call):
+    """Handle premium plan selection callbacks"""
+    try:
+        user_id = call.from_user.id
+        plan = call.data.split('_')[1]  # Extract 'weekly' or 'monthly'
+        
+        # Store payment plan for user
+        user_payment_plans[user_id] = plan
+        
+        # Answer callback
+        bot.answer_callback_query(call.id)
+        
+        # Ask for payment receipt
+        amount = 5000 if plan == 'weekly' else 15000
+        period = "1 hafta" if plan == 'weekly' else "1 oy"
+        
+        payment_text = f"""💳 To'lov ma'lumotlari:
+
+💰 Summa: {amount:,} so'm
+📅 Muddat: {period}
+💳 Karta raqami: {PAYMENT_CARD}
+
+To'lovni amalga oshirgandan so'ng, chek rasmini yuboring!"""
+        
+        bot.edit_message_text(
+            payment_text,
+            call.message.chat.id,
+            call.message.message_id
+        )
+        
+    except Exception as e:
+        logger.error(f"Error handling premium callback: {e}")
         bot.answer_callback_query(call.id, text="❌ Xatolik yuz berdi")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('lang_'))
@@ -604,6 +961,13 @@ def process_media_with_effect_callback(call, effect_type):
             success = process_photo_to_kruzhok(input_file, output_file, effect_type)
         
         if success:
+            # Use kruzhok count
+            use_kruzhok(
+                user_id=user_id,
+                username=call.from_user.username,
+                first_name=call.from_user.first_name
+            )
+            
             # Send the kruzhok
             with open(output_file, 'rb') as video:
                 sent_message = bot.send_video_note(
@@ -628,8 +992,19 @@ def process_media_with_effect_callback(call, effect_type):
                 file_size=file_size
             )
             
-            # Delete processing message
+            # Delete processing message and show success message
             bot.delete_message(call.message.chat.id, call.message.message_id)
+            
+            # Show remaining limits
+            limits = get_user_limits(user_id)
+            remaining = (limits['daily_limit'] + limits['bonus_kruzhoks']) - limits['daily_used']
+            
+            if limits['is_premium']:
+                status_msg = "💎 Premium - Cheksiz kruzhoklar"
+            else:
+                status_msg = f"🆓 Qolgan: {remaining}/{limits['daily_limit'] + limits['bonus_kruzhoks']}"
+            
+            bot.send_message(call.message.chat.id, f"✅ Tayyor!\n{status_msg}")
         else:
             bot.edit_message_text(
                 messages['error'],

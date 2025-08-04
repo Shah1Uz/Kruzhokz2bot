@@ -16,6 +16,9 @@ Admin ID: 5615887242
 - **Dependencies**: Added FFmpeg system dependency for video processing
 - **Database**: PostgreSQL database configured and tables initialized
 - **Admin Features**: Added admin panel with statistics and monitoring (Admin ID: 5615887242)
+- **Referral System**: Users get 3 bonus kruzhoks for each referral, with automatic tracking
+- **Premium Payment**: Card-based payment system (9860290101626056) with admin approval workflow
+- **Daily Limits**: Free users have 5 kruzhoks per day, premium users have unlimited access
 
 ## System Architecture
 
