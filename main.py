@@ -485,6 +485,7 @@ def handle_referral_command(message):
             link=referral_link
         )
         
+        logger.info(f"User {user_id} requested referral info")
         bot.reply_to(message, referral_text)
         
     except Exception as e:
@@ -506,6 +507,7 @@ def handle_premium_command(message):
     markup.add(btn_weekly, btn_monthly)
     
     premium_text = messages['premium_info'].format(card=PAYMENT_CARD)
+    logger.info(f"User {user_id} requested premium info")
     bot.reply_to(message, premium_text, reply_markup=markup)
 
 @bot.message_handler(commands=['limits'])
@@ -526,6 +528,7 @@ def handle_limits_command(message):
             status=status
         )
         
+        logger.info(f"User {user_id} requested limits info")
         bot.reply_to(message, limits_text)
         
     except Exception as e:
@@ -660,6 +663,7 @@ def handle_photo_and_receipts(message):
         # Check if user can create kruzhok
         if not can_create_kruzhok(user_id):
             messages = get_user_messages(user_id)
+            logger.info(f"User {user_id} reached daily limit for photo")
             bot.reply_to(message, messages['daily_limit_reached'])
             return
         
@@ -702,6 +706,7 @@ def handle_video(message):
         # Check if user can create kruzhok
         if not can_create_kruzhok(user_id):
             messages = get_user_messages(user_id)
+            logger.info(f"User {user_id} reached daily limit for video")
             bot.reply_to(message, messages['daily_limit_reached'])
             return
         
@@ -929,6 +934,9 @@ def handle_language_callback(call):
 @bot.message_handler(func=lambda message: True)
 def handle_text_messages(message):
     """Handle all text messages"""
+    # Log the message for debugging
+    logger.info(f"User {message.from_user.id} sent text: {message.text[:50]}...")
+    
     # Default welcome message in user's language
     messages = get_user_messages(message.from_user.id)
     user_name = message.from_user.first_name or "User"
