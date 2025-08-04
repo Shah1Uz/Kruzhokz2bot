@@ -636,18 +636,22 @@ def handle_photo_and_receipts(message):
                 messages = get_user_messages(user_id)
                 bot.reply_to(message, messages['payment_received'])
                 
-                # Notify admin
+                # Notify admin with inline buttons
                 admin_text = f"""💳 Yangi to'lov so'rovi!
 
 👤 {message.from_user.first_name} (@{message.from_user.username or 'username_yoq'})
 💰 {amount:,} so'm - {plan}
-🆔 #{payment.id}
-
-/payments - Barcha so'rovlarni ko'rish"""
+🆔 #{payment.id}"""
+                
+                # Create inline keyboard for admin approval
+                markup = types.InlineKeyboardMarkup(row_width=2)
+                btn_approve = types.InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"approve_payment_{payment.id}")
+                btn_reject = types.InlineKeyboardButton("❌ Rad etish", callback_data=f"reject_payment_{payment.id}")
+                markup.add(btn_approve, btn_reject)
                 
                 try:
                     bot.send_message(ADMIN_ID, admin_text)
-                    bot.send_photo(ADMIN_ID, photo.file_id, caption=f"To'lov cheki #{payment.id}")
+                    bot.send_photo(ADMIN_ID, photo.file_id, caption=f"To'lov cheki #{payment.id}", reply_markup=markup)
                 except:
                     pass
                 
@@ -775,14 +779,20 @@ def handle_receipt_command(message):
 
 @bot.message_handler(func=lambda message: message.text and message.text.startswith('/approve_'))
 def handle_approve_command(message):
-    """Handle /approve_ID command - approve payment"""
+    """Handle /approve_ID command - approve payment (backup method)"""
     user_id = message.from_user.id
     
     if not is_admin(user_id):
         return
     
     try:
-        payment_id = int(message.text.split('_')[1])
+        # Fix parsing - split by underscore and get the second part
+        parts = message.text.split('_')
+        if len(parts) < 2:
+            bot.reply_to(message, "❌ Noto'g'ri format. /approve_123 formatida yuboring")
+            return
+            
+        payment_id = int(parts[1])
         payment = approve_payment(payment_id, "Tasdiqlandi")
         
         if payment:
@@ -797,6 +807,9 @@ def handle_approve_command(message):
         else:
             bot.reply_to(message, "❌ To'lov topilmadi yoki xatolik")
         
+    except (ValueError, IndexError) as e:
+        logger.error(f"Error parsing approve command: {e}")
+        bot.reply_to(message, "❌ Noto'g'ri format. /approve_123 formatida yuboring")
     except Exception as e:
         logger.error(f"Error approving payment: {e}")
         bot.reply_to(message, "❌ Xatolik yuz berdi")
@@ -895,6 +908,112 @@ To'lovni amalga oshirgandan so'ng, chek rasmini yuboring!"""
     except Exception as e:
         logger.error(f"Error handling premium callback: {e}")
         bot.answer_callback_query(call.id, text="❌ Xatolik yuz berdi")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('approve_payment_'))
+def handle_approve_payment_callback(call):
+    """Handle payment approval via inline button"""
+    try:
+        user_id = call.from_user.id
+        
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, text="❌ Ruxsat yo'q")
+            return
+        
+        payment_id = int(call.data.split('_')[2])
+        payment = approve_payment(payment_id, "Admin tomonidan tasdiqlandi")
+        
+        if payment:
+            # Update message to show approved
+            approved_text = f"""✅ TO'LOV TASDIQLANDI
+
+👤 {payment.first_name}
+💰 {payment.payment_amount:,} so'm - {payment.payment_plan}
+🆔 #{payment.id}
+⏰ {payment.processed_at.strftime('%d.%m.%Y %H:%M')}"""
+            
+            bot.edit_message_caption(
+                caption=approved_text,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id
+            )
+            
+            # Notify user about approval
+            try:
+                messages = get_user_messages(payment.user_id)
+                bot.send_message(payment.user_id, messages['payment_approved'])
+            except:
+                pass
+            
+            bot.answer_callback_query(call.id, text="✅ To'lov tasdiqlandi!")
+        else:
+            bot.answer_callback_query(call.id, text="❌ Xatolik yuz berdi")
+        
+    except Exception as e:
+        logger.error(f"Error approving payment via callback: {e}")
+        bot.answer_callback_query(call.id, text="❌ Xatolik yuz berdi")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('reject_payment_'))
+def handle_reject_payment_callback(call):
+    """Handle payment rejection via inline button"""
+    try:
+        user_id = call.from_user.id
+        
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, text="❌ Ruxsat yo'q")
+            return
+        
+        payment_id = int(call.data.split('_')[2])
+        
+        # Ask for rejection reason
+        bot.answer_callback_query(call.id)
+        msg = bot.send_message(call.message.chat.id, "❌ Rad etish sababini yozing:")
+        bot.register_next_step_handler(msg, process_rejection_callback, payment_id, call.message.chat.id, call.message.message_id)
+        
+    except Exception as e:
+        logger.error(f"Error rejecting payment via callback: {e}")
+        bot.answer_callback_query(call.id, text="❌ Xatolik yuz berdi")
+
+def process_rejection_callback(message, payment_id, original_chat_id, original_message_id):
+    """Process rejection reason from callback"""
+    reason = message.text
+    payment = reject_payment(payment_id, reason)
+    
+    if payment:
+        # Update original message to show rejected
+        rejected_text = f"""❌ TO'LOV RAD ETILDI
+
+👤 {payment.first_name}
+💰 {payment.payment_amount:,} so'm - {payment.payment_plan}
+🆔 #{payment.id}
+💬 Sabab: {reason}
+⏰ {payment.processed_at.strftime('%d.%m.%Y %H:%M')}"""
+        
+        try:
+            bot.edit_message_caption(
+                caption=rejected_text,
+                chat_id=original_chat_id,
+                message_id=original_message_id
+            )
+        except:
+            pass
+        
+        # Notify user about rejection
+        try:
+            messages = get_user_messages(payment.user_id)
+            rejection_msg = messages['payment_rejected'].format(reason=reason)
+            bot.send_message(payment.user_id, rejection_msg)
+        except:
+            pass
+        
+        bot.reply_to(message, f"❌ To'lov #{payment_id} rad etildi!")
+        
+        # Delete the reason request message
+        try:
+            bot.delete_message(message.chat.id, message.message_id)
+        except:
+            pass
+    else:
+        bot.reply_to(message, "❌ To'lov topilmadi yoki xatolik")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('lang_'))
 def handle_language_callback(call):
