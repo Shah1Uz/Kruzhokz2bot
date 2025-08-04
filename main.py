@@ -31,6 +31,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable is required")
 
+# Admin ID
+ADMIN_ID = 5615887242
+
 # Logging sozlash
 logging.basicConfig(
     level=logging.INFO,
@@ -131,6 +134,10 @@ Quick commands:
         'language_set': "✅ Language set to English!"
     }
 }
+
+def is_admin(user_id):
+    """Check if user is admin"""
+    return user_id == ADMIN_ID
 
 def get_user_messages(user_id):
     """Get messages in user's preferred language"""
@@ -297,6 +304,10 @@ def send_welcome(message):
     """Handle /start command - show language selection for new users"""
     user_id = message.from_user.id
     
+    # Log admin access
+    if is_admin(user_id):
+        logger.info(f"Admin {user_id} started the bot")
+    
     # Always show language selection first for /start command
     markup = create_language_keyboard()
     bot.reply_to(message, "🌐 Tilni tanlang / Выберите язык / Choose language:", reply_markup=markup)
@@ -313,6 +324,83 @@ def send_lang_selection(message):
     messages = get_user_messages(message.from_user.id)
     markup = create_language_keyboard()
     bot.reply_to(message, messages['lang_selection'], reply_markup=markup)
+
+@bot.message_handler(commands=['admin'])
+def handle_admin_command(message):
+    """Handle /admin command - admin only functions"""
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id):
+        bot.reply_to(message, "❌ Siz admin emassiz / You are not admin")
+        return
+    
+    # Admin statistics
+    try:
+        from models import SessionLocal, UserHistory, UserLanguage
+        session = SessionLocal()
+        
+        total_users = session.query(UserLanguage).count()
+        total_kruzhoks = session.query(UserHistory).count()
+        
+        admin_text = f"""👑 Admin Panel
+
+📊 Statistika:
+👥 Jami foydalanuvchilar: {total_users}
+🎬 Jami kruzhoklar: {total_kruzhoks}
+
+🛠 Admin buyruqlari:
+/stats - Batafsil statistika
+/broadcast - Xabar yuborish"""
+        
+        bot.reply_to(message, admin_text)
+        session.close()
+        
+    except Exception as e:
+        logger.error(f"Error in admin command: {e}")
+        bot.reply_to(message, "❌ Xatolik yuz berdi")
+
+@bot.message_handler(commands=['stats'])
+def handle_stats_command(message):
+    """Handle /stats command - detailed statistics for admin"""
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    try:
+        from models import SessionLocal, UserHistory, UserLanguage
+        from sqlalchemy import func
+        session = SessionLocal()
+        
+        # Get user count by language
+        lang_stats = session.query(
+            UserLanguage.language_code, 
+            func.count(UserLanguage.id)
+        ).group_by(UserLanguage.language_code).all()
+        
+        # Get effect usage stats
+        effect_stats = session.query(
+            UserHistory.effect_name,
+            func.count(UserHistory.id)
+        ).group_by(UserHistory.effect_name).all()
+        
+        stats_text = "📊 Batafsil Statistika:\n\n"
+        
+        stats_text += "🌐 Tillar bo'yicha:\n"
+        for lang, count in lang_stats:
+            lang_name = {"uz": "O'zbek", "ru": "Rus", "en": "Ingliz"}.get(lang, lang)
+            stats_text += f"  {lang_name}: {count}\n"
+        
+        stats_text += "\n🎨 Effektlar bo'yicha:\n"
+        for effect, count in effect_stats:
+            stats_text += f"  {effect}: {count}\n"
+        
+        bot.reply_to(message, stats_text)
+        session.close()
+        
+    except Exception as e:
+        logger.error(f"Error in stats command: {e}")
+        bot.reply_to(message, "❌ Xatolik yuz berdi")
 
 @bot.message_handler(commands=['history'])
 def send_history(message):

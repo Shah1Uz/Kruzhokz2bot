@@ -15,6 +15,7 @@ Admin ID: 5615887242
 - **Security Enhancement**: Removed hardcoded bot token, now requires BOT_TOKEN environment variable
 - **Dependencies**: Added FFmpeg system dependency for video processing
 - **Database**: PostgreSQL database configured and tables initialized
+- **Admin Features**: Added admin panel with statistics and monitoring (Admin ID: 5615887242)
 
 ## System Architecture
 
