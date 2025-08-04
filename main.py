@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from dotenv import load_dotenv
 import os
 import subprocess
 import time
+import tempfile
+import json
 from pathlib import Path
 import telebot
+from telebot import types
 import logging
+from models import (
+    create_tables, 
+    save_user_history, 
+    get_user_history, 
+    get_total_user_kruzhoks,
+    set_user_language,
+    get_user_language
+)
 
-# .env faylni yuklash
-load_dotenv()
+# Environment variables are handled by Replit automatically
 
 # DATABASE_URL ni tekshirish
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -18,7 +27,9 @@ if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable is required")
 
 # BOT_TOKEN ni olish
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7561905786:AAFPVSuvoQipXuVOy2ecm3jCRxyG04e5U6Q")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable is required")
 
 # Logging sozlash
 logging.basicConfig(
@@ -338,7 +349,7 @@ def send_history(message):
                 
     except Exception as e:
         logger.error(f"Error handling history command: {e}")
-        messages = get_user_messages(user_id)
+        messages = get_user_messages(message.from_user.id)
         bot.reply_to(message, messages['error'])
 
 @bot.message_handler(content_types=['video'])
@@ -373,7 +384,7 @@ def handle_video(message):
             
     except Exception as e:
         logger.error(f"Error handling video: {e}")
-        messages = get_user_messages(user_id)
+        messages = get_user_messages(message.from_user.id)
         bot.reply_to(message, messages['error'])
 
 @bot.message_handler(content_types=['photo'])
@@ -409,7 +420,7 @@ def handle_photo(message):
             
     except Exception as e:
         logger.error(f"Error handling photo: {e}")
-        messages = get_user_messages(user_id)
+        messages = get_user_messages(message.from_user.id)
         bot.reply_to(message, messages['error'])
 
 @bot.message_handler(content_types=['document', 'audio', 'voice', 'sticker'])

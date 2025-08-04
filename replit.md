@@ -7,6 +7,14 @@ This is a Telegram bot that converts regular videos and images into circular vid
 ## User Preferences
 
 Preferred communication style: Simple, everyday language.
+Admin ID: 5615887242
+
+## Recent Changes
+
+- **2025-08-04**: Migrated project from Replit Agent to Replit environment
+- **Security Enhancement**: Removed hardcoded bot token, now requires BOT_TOKEN environment variable
+- **Dependencies**: Added FFmpeg system dependency for video processing
+- **Database**: PostgreSQL database configured and tables initialized
 
 ## System Architecture
 
